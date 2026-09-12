@@ -2,10 +2,9 @@
 id: 9
 title: Build and test on macOS and Linux in CI
 type: chore
-status: doing
+status: done
 milestone: v0.1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-12
 depends_on:
 - 6
 created: 2026-09-11
