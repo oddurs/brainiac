@@ -4,17 +4,13 @@
 
 ## v0.1 — Dogfood
 
-`########··` 71% · 5 of 7 done · due 2026-09-26
+`#########·` 86% · 6 of 7 done · due 2026-09-26
 
 Install brainiac, point it at a repo you own, and get a context pack worth pasting — from the CLI, the TUI, or an agent over MCP.
 
-### backlog
-
-- [ ] `0011` Verify the README quickstart verbatim, as a stranger <sup>docs · p0 · docs</sup>
-
 ### in progress
 
-- [ ] `0010` cargo install from a clean clone works with no extra steps <sup>chore · p0 · build</sup>
+- [ ] `0011` Verify the README quickstart verbatim, as a stranger <sup>docs · p0 · docs</sup>
 
 ### done
 
@@ -22,6 +18,7 @@ Install brainiac, point it at a repo you own, and get a context pack worth pasti
 - [x] `0007` A concurrent commit kills an index run instantly <sup>bug · p0 · store</sup>
 - [x] `0008` Document MCP registration and verify it in a real agent <sup>docs · p0 · mcp</sup>
 - [x] `0009` Build and test on macOS and Linux in CI <sup>chore · p1 · build</sup>
+- [x] `0010` cargo install from a clean clone works with no extra steps <sup>chore · p0 · build</sup>
 - [x] `0013` Indexing must scope to the directory named, not the whole enclosing repo <sup>bug · p1 · index</sup>
 
 ## v0.2 — Trust it
