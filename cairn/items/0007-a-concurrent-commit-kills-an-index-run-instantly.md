@@ -2,10 +2,9 @@
 id: 7
 title: A concurrent commit kills an index run instantly
 type: bug
-status: doing
+status: done
 milestone: v0.1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-12
 created: 2026-09-11
 updated: 2026-09-12
 priority: p0

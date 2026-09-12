@@ -13,7 +13,7 @@ use std::path::PathBuf;
     about = "Ranked, token-budgeted context for your repos — CLI, TUI, and MCP."
 )]
 struct Cli {
-    /// Repository to operate on. Defaults to the enclosing git repo.
+    /// Directory to index. Defaults to the enclosing git repository.
     #[arg(long, short = 'C', global = true)]
     repo: Option<PathBuf>,
     #[command(subcommand)]
@@ -69,11 +69,11 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Index { force } => {
-            let s = index::run(&repo.root, &mut st, force)?;
+            let s = index::run(&repo.scope, repo.git_root.as_deref(), &mut st, force)?;
             let (nf, ns, nc, nl) = store::counts(&st.conn)?;
             eprintln!(
                 "{} · {} files, {} lines, {} symbols, {} chunks",
-                repo.root.display(),
+                repo.scope.display(),
                 nf,
                 nl,
                 ns,
@@ -87,7 +87,12 @@ fn main() -> Result<()> {
         Cmd::Status => {
             let (nf, ns, nc, nl) = store::counts(&st.conn)?;
             let size = std::fs::metadata(&repo.db).map(|m| m.len()).unwrap_or(0);
-            println!("root     {}", repo.root.display());
+            println!("scope    {}", repo.scope.display());
+            match &repo.git_root {
+                Some(g) if *g != repo.scope => println!("repo     {}", g.display()),
+                Some(_) => {}
+                None => println!("repo     — not a git repository"),
+            }
             println!("index    {}", repo.db.display());
             println!("size     {:.1} MiB", size as f64 / 1048576.0);
             println!("commit   {}", st.get_meta("head")?.unwrap_or("—".into()));
@@ -137,7 +142,7 @@ fn main() -> Result<()> {
                     budget,
                     map_share: map_share.clamp(0.0, 1.0),
                     head: st.get_meta("head")?,
-                    root: repo.root.to_string_lossy().to_string(),
+                    root: repo.scope.to_string_lossy().to_string(),
                 },
             )?;
             emit(&text, out)?;
@@ -151,7 +156,7 @@ fn main() -> Result<()> {
                     budget,
                     map_share: 1.0,
                     head: st.get_meta("head")?,
-                    root: repo.root.to_string_lossy().to_string(),
+                    root: repo.scope.to_string_lossy().to_string(),
                 },
             )?;
             print!("{text}");
@@ -169,7 +174,7 @@ fn main() -> Result<()> {
                                 budget: 6000,
                                 map_share: 0.25,
                                 head: st.get_meta("head")?,
-                                root: repo.root.to_string_lossy().to_string(),
+                                root: repo.scope.to_string_lossy().to_string(),
                             },
                         )?
                     } else {
@@ -189,9 +194,9 @@ fn main() -> Result<()> {
 fn ensure_indexed(repo: &config::Repo, st: &mut store::Store) -> Result<()> {
     let cold = index::is_empty(st);
     if cold {
-        eprintln!("brainiac: building index for {} …", repo.root.display());
+        eprintln!("brainiac: building index for {} …", repo.scope.display());
     }
-    let s = index::run(&repo.root, st, false)?;
+    let s = index::run(&repo.scope, repo.git_root.as_deref(), st, false)?;
     if cold || s.reparsed > 0 {
         eprintln!(
             "brainiac: {} files, {} reparsed, {}ms",

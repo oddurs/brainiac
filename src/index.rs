@@ -29,7 +29,13 @@ struct Unit {
     chunks: Vec<parse::ChunkDraft>,
 }
 
-pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
+pub fn run(
+    scope: &Path,
+    git_root: Option<&Path>,
+    st: &mut store::Store,
+    force: bool,
+) -> Result<Stats> {
+    let root = scope;
     let t0 = Instant::now();
     let generation = st
         .get_meta("generation")?
@@ -113,7 +119,12 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
         })
         .collect();
 
-    let churn = git_churn(root);
+    // Churn comes from the repository even when only a subtree is indexed, so its
+    // repository-relative paths have to be rebased onto the scope.
+    let churn = match git_root {
+        Some(g) => rebase_churn(git_churn(g), scope, g),
+        None => HashMap::new(),
+    };
 
     let mut reparsed = 0usize;
     let pruned;
@@ -169,8 +180,8 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
     }
 
     st.set_meta("generation", &generation.to_string())?;
-    st.set_meta("root", &root.to_string_lossy())?;
-    if let Some(head) = git_head(root) {
+    st.set_meta("root", &scope.to_string_lossy())?;
+    if let Some(head) = git_root.and_then(git_head) {
         st.set_meta("head", &head)?;
     }
     st.conn.execute_batch("PRAGMA optimize;")?;
@@ -183,14 +194,60 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
     })
 }
 
+/// Move repository-relative churn paths onto a scope that may be a subtree.
+///
+/// A path outside the scope is dropped. A scope that is not inside the repository at
+/// all yields nothing: applying every repository path to an unrelated directory would
+/// attribute churn to files that do not exist there.
+pub fn rebase_churn(
+    churn: HashMap<String, u32>,
+    scope: &Path,
+    git_root: &Path,
+) -> HashMap<String, u32> {
+    let prefix = match scope.strip_prefix(git_root) {
+        Ok(rel) if rel.as_os_str().is_empty() => return churn,
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => return HashMap::new(),
+    };
+    churn
+        .into_iter()
+        .filter_map(|(path, n)| {
+            Path::new(&path)
+                .strip_prefix(&prefix)
+                .ok()
+                .map(|r| (r.to_string_lossy().to_string(), n))
+        })
+        .collect()
+}
+
 /// Commits touching each file in the recent window. A cheap, honest recency
 /// prior: what you have been editing is what you are about to ask about.
+/// A `git` invocation pinned to `root`.
+///
+/// Git hooks export `GIT_DIR`, and it takes precedence over `-C`. Without scrubbing
+/// the inherited environment, running brainiac from inside a hook would read history
+/// from whatever repository invoked the hook rather than the one being indexed.
+fn git_at(root: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        c.env_remove(var);
+    }
+    c.arg("-C").arg(root);
+    c
+}
+
 fn git_churn(root: &Path) -> HashMap<String, u32> {
     let mut out = HashMap::new();
-    let Ok(o) = std::process::Command::new("git")
+    let Ok(o) = git_at(root)
         .args([
-            "-C",
-            &root.to_string_lossy(),
             "log",
             "--since=120.days",
             "--name-only",
@@ -214,14 +271,8 @@ fn git_churn(root: &Path) -> HashMap<String, u32> {
 }
 
 fn git_head(root: &Path) -> Option<String> {
-    let o = std::process::Command::new("git")
-        .args([
-            "-C",
-            &root.to_string_lossy(),
-            "rev-parse",
-            "--short",
-            "HEAD",
-        ])
+    let o = git_at(root)
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()?;
     o.status

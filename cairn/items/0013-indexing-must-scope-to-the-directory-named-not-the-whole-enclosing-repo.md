@@ -2,10 +2,12 @@
 id: 13
 title: Indexing must scope to the directory named, not the whole enclosing repo
 type: bug
-status: backlog
+status: doing
 milestone: v0.1
+assignee: Oddur Sigurdsson
+claimed: 2026-09-12
 created: 2026-09-11
-updated: 2026-09-11
+updated: 2026-09-12
 priority: p1
 effort: m
 area: index
@@ -30,7 +32,15 @@ it, but the walk and the index are confined to the directory given.
 
 ## Acceptance criteria
 
-- [ ] The walk root is the directory passed to `-C`, defaulting to the git root when absent.
-- [ ] Indexes are keyed by scope, so two subtrees do not share one database.
-- [ ] `brainiac status` prints both the scope and the git root when they differ.
-- [ ] A test indexes a subdirectory of a fixture repo and sees only that subtree.
+- [x] The walk root is the directory passed to `-C`, defaulting to the git root when absent.
+- [x] Indexes are keyed by scope, so two subtrees do not share one database.
+- [x] `brainiac status` prints both the scope and the git root when they differ.
+- [x] A test indexes a subdirectory of a fixture repo and sees only that subtree.
+
+## 2026-09-12
+
+Review found a regression I introduced: -C pointing at a FILE produced a silent empty index (walk yields one entry, strip_prefix leaves an empty path, read of '<file>/' fails ENOTDIR and is discarded). Now refused with a message naming the parent directory. Also found my rebase_churn extraction had silently not applied — index::run still ran the old inline copy, so the F3 fallback fix was dead and the e2e churn test was passing without exercising it. Both fixed and both now verified by mutation.
+
+## 2026-09-12
+
+Second review round found a worse bug than the one being fixed: git hooks export GIT_DIR, and GIT_DIR takes precedence over 'git -C'. The test helper's 'git init'/'commit' therefore wrote into the real repository when the suite ran from .githooks/pre-push — four fixture commits landed on this feature branch. Same exposure existed in production: git_churn and git_head would read history from whatever repo invoked the hook. Both now scrub the inherited git environment, with a regression test that fails when the scrub is removed.
