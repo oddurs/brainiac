@@ -110,17 +110,22 @@ sliding windows. Anything else is skipped.
 
 ## Performance
 
-Measured on a 471k-line, 1560-file repository on an M-series laptop:
+Measured on a 471k-line, 1560-file repository on an M-series laptop, with a warm
+filesystem cache, using a release binary installed from a clean clone:
 
 | | |
 |---|---|
-| full index from cold | ~2 s |
-| re-index, nothing changed | ~300 ms |
-| `search` end to end, including the freshness check | ~0.6 s |
-| keystroke in the TUI, where the graph is held open | 60–200 ms |
+| full index (`index -f`) | ~1.0 s |
+| re-index, nothing changed | ~80 ms |
+| `search` end to end, including the freshness check | ~0.11 s |
+| index size | 55 MiB |
 
 Every command re-indexes incrementally before answering, because a stale answer costs
-more than the wait. The index is ~45 MB for that repo.
+more than the wait. That pass still reads and hashes every file — skipping unchanged
+files by mtime is not implemented yet, so the 80 ms is the floor for any command on a
+repository this size.
+
+These are one machine on one day, not a budget. Nothing enforces them yet.
 
 ## Development
 
