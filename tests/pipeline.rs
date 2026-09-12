@@ -36,7 +36,7 @@ impl Fixture {
         store::Store::open(&self.db).unwrap()
     }
     fn index(&self, st: &mut store::Store) -> index::Stats {
-        index::run(&self.root, st, false).unwrap()
+        index::run(&self.root, None, st, false).unwrap()
     }
 }
 
@@ -380,18 +380,109 @@ fn token_estimate_tracks_length() {
 
 // --- discovery -------------------------------------------------------------
 
+/// `-C` names the scope. Asking about one package of a monorepo must not drag in
+/// every other package, which is what walking up to the git root used to do.
 #[test]
-fn discovery_walks_up_to_the_git_root() {
+fn an_explicit_path_scopes_the_walk_to_that_subtree() {
+    let fx = fixture();
+    fs::create_dir_all(fx.root.join(".git")).unwrap();
+    fx.write("packages/ui/lib.rs", "pub fn ui_button() {}\n");
+    fx.write("packages/app/main.rs", "pub fn app_main() {}\n");
+    fx.write("root_thing.rs", "pub fn root_thing() {}\n");
+
+    let ui = fs::canonicalize(fx.root.join("packages/ui")).unwrap();
+    let repo = brainiac::config::discover(Some(&ui)).unwrap();
+    assert_eq!(repo.scope, ui);
+    assert_eq!(
+        repo.git_root
+            .as_deref()
+            .map(|p| fs::canonicalize(p).unwrap()),
+        Some(fs::canonicalize(&fx.root).unwrap()),
+        "the git root is still found, for churn and HEAD"
+    );
+
+    let mut st = store::Store::open(&fx.db).unwrap();
+    let stats = index::run(&repo.scope, repo.git_root.as_deref(), &mut st, false).unwrap();
+    assert_eq!(stats.scanned, 1, "only packages/ui should be walked");
+    assert!(
+        !store::symbols_named(&st.conn, "ui_button")
+            .unwrap()
+            .is_empty()
+    );
+    for outside in ["app_main", "root_thing"] {
+        assert!(
+            store::symbols_named(&st.conn, outside).unwrap().is_empty(),
+            "{outside} is outside the scope but was indexed"
+        );
+    }
+}
+
+/// With no `-C`, the scope is the whole repository, so running from a subdirectory
+/// still sees everything — the behaviour people rely on day to day.
+#[test]
+fn without_an_explicit_path_the_scope_is_the_git_root() {
+    let fx = fixture();
+    fs::create_dir_all(fx.root.join(".git")).unwrap();
+    let deep = fx.root.join("src/deep/nested");
+    fs::create_dir_all(&deep).unwrap();
+
+    let repo = brainiac::config::discover_from(None, &deep).unwrap();
+    assert_eq!(
+        repo.scope,
+        fs::canonicalize(&fx.root).unwrap(),
+        "running from a subdirectory should still index the whole repository"
+    );
+    assert!(repo.db.extension().is_some_and(|e| e == "db"));
+}
+
+/// An explicit `-C` deep inside a repository is taken at face value.
+#[test]
+fn an_explicit_path_is_used_verbatim_however_deep_it_is() {
     let fx = fixture();
     fs::create_dir_all(fx.root.join(".git")).unwrap();
     let deep = fx.root.join("src/deep/nested");
     fs::create_dir_all(&deep).unwrap();
     let repo = brainiac::config::discover(Some(&deep)).unwrap();
-    assert_eq!(
-        fs::canonicalize(&repo.root).unwrap(),
-        fs::canonicalize(&fx.root).unwrap()
+    assert_eq!(repo.scope, fs::canonicalize(&deep).unwrap());
+}
+
+/// Outside a repository there is no git root, and the scope is just the directory.
+#[test]
+fn a_directory_outside_any_repository_still_indexes() {
+    let fx = fixture();
+    fx.write("a.rs", "pub fn only_thing() {}\n");
+    let repo = brainiac::config::discover(Some(&fx.root)).unwrap();
+    assert_ne!(
+        repo.git_root.as_deref(),
+        Some(repo.scope.as_path()),
+        "the fixture directory is not itself a repository"
     );
-    assert!(repo.db.extension().is_some_and(|e| e == "db"));
+    let mut st = store::Store::open(&fx.db).unwrap();
+    let stats = index::run(&repo.scope, repo.git_root.as_deref(), &mut st, false).unwrap();
+    assert_eq!(stats.scanned, 1);
+}
+
+/// Two subtrees of one repository must not collide in the index directory.
+#[test]
+fn each_scope_gets_its_own_index_file() {
+    let fx = fixture();
+    fs::create_dir_all(fx.root.join(".git")).unwrap();
+    fx.write("packages/ui/lib.rs", "pub fn a() {}\n");
+    fx.write("packages/app/main.rs", "pub fn b() {}\n");
+    let ui = brainiac::config::discover(Some(&fx.root.join("packages/ui"))).unwrap();
+    let app = brainiac::config::discover(Some(&fx.root.join("packages/app"))).unwrap();
+    let whole = brainiac::config::discover(Some(&fx.root)).unwrap();
+    assert_ne!(ui.db, app.db);
+    assert_ne!(ui.db, whole.db);
+    assert_ne!(app.db, whole.db);
+
+    // Migration safety: a whole-repo scope must hash to the same path the old
+    // git-root-keyed scheme produced, or every existing index is orphaned.
+    let from_inside = brainiac::config::discover_from(None, &fx.root.join("packages/ui")).unwrap();
+    assert_eq!(
+        from_inside.db, whole.db,
+        "whole-repo index path changed; existing indexes would be orphaned"
+    );
 }
 
 #[test]
@@ -456,7 +547,7 @@ fn two_concurrent_index_runs_both_succeed() {
                 let root = fx.root.clone();
                 std::thread::spawn(move || {
                     let mut st = store::Store::open(&db).unwrap();
-                    index::run(&root, &mut st, true).map(|s| s.scanned)
+                    index::run(&root, None, &mut st, true).map(|s| s.scanned)
                 })
             })
             .collect();
@@ -468,4 +559,133 @@ fn two_concurrent_index_runs_both_succeed() {
             assert_eq!(scanned, 63);
         }
     }
+}
+
+// --- scoped indexing against a real repository -----------------------------
+
+/// `git init` plus commits. The churn rebasing is the one genuinely new algorithm
+/// in scoped indexing, and a fake `.git` directory cannot exercise it: `git log`
+/// fails and the churn map comes back empty.
+fn git(fx: &Fixture, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-C", &fx.root.to_string_lossy()])
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .expect("git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn churn_of(conn: &rusqlite::Connection, path: &str) -> u32 {
+    conn.query_row("SELECT churn FROM files WHERE path=?1", [path], |r| {
+        r.get(0)
+    })
+    .unwrap_or(0)
+}
+
+#[test]
+fn churn_is_rebased_onto_a_scoped_subtree() {
+    let fx = fixture();
+    git(&fx, &["init", "-q"]);
+    fx.write("packages/ui/lib.rs", "pub fn ui_button() {}\n");
+    fx.write("packages/app/main.rs", "pub fn app_main() {}\n");
+    git(&fx, &["add", "-A"]);
+    git(&fx, &["commit", "-qm", "one"]);
+    // Three more commits touching only the ui package.
+    for i in 0..3 {
+        fx.write(
+            "packages/ui/lib.rs",
+            &format!("pub fn ui_button() {{ let _ = {i}; }}\n"),
+        );
+        git(&fx, &["add", "-A"]);
+        git(&fx, &["commit", "-qm", "ui change"]);
+    }
+
+    let ui = brainiac::config::discover(Some(&fx.root.join("packages/ui"))).unwrap();
+    assert!(ui.git_root.is_some(), "the real repository should be found");
+
+    let mut st = store::Store::open(&fx.db).unwrap();
+    index::run(&ui.scope, ui.git_root.as_deref(), &mut st, false).unwrap();
+
+    // Repository-relative "packages/ui/lib.rs" must land on scope-relative "lib.rs".
+    assert_eq!(
+        churn_of(&st.conn, "lib.rs"),
+        4,
+        "churn did not rebase onto the scope"
+    );
+    // HEAD still comes from the repository even though only a subtree was indexed.
+    assert!(
+        st.get_meta("head").unwrap().is_some(),
+        "head should come from the git root"
+    );
+}
+
+#[test]
+fn churn_for_a_whole_repo_scope_is_untouched() {
+    let fx = fixture();
+    git(&fx, &["init", "-q"]);
+    fx.write("packages/ui/lib.rs", "pub fn ui_button() {}\n");
+    fx.write("root_thing.rs", "pub fn root_thing() {}\n");
+    git(&fx, &["add", "-A"]);
+    git(&fx, &["commit", "-qm", "one"]);
+
+    let whole = brainiac::config::discover(Some(&fx.root)).unwrap();
+    let mut st = store::Store::open(&fx.db).unwrap();
+    index::run(&whole.scope, whole.git_root.as_deref(), &mut st, false).unwrap();
+
+    assert_eq!(churn_of(&st.conn, "packages/ui/lib.rs"), 1);
+    assert_eq!(churn_of(&st.conn, "root_thing.rs"), 1);
+}
+
+#[test]
+fn rebasing_drops_paths_outside_the_scope_rather_than_misattributing_them() {
+    use std::collections::HashMap;
+    use std::path::Path;
+    let churn: HashMap<String, u32> = [
+        ("packages/ui/lib.rs".to_string(), 4),
+        ("packages/uix/other.rs".to_string(), 9), // shares a string prefix, not a path one
+        ("root_thing.rs".to_string(), 2),
+    ]
+    .into_iter()
+    .collect();
+
+    let out = index::rebase_churn(churn.clone(), Path::new("/r/packages/ui"), Path::new("/r"));
+    assert_eq!(out.get("lib.rs"), Some(&4));
+    assert_eq!(out.len(), 1, "only paths inside the scope survive: {out:?}");
+
+    // Whole-repo scope passes through untouched.
+    let same = index::rebase_churn(churn.clone(), Path::new("/r"), Path::new("/r"));
+    assert_eq!(same.len(), 3);
+
+    // A scope outside the repository means no churn, never all of it applied raw.
+    let unrelated = index::rebase_churn(churn, Path::new("/elsewhere"), Path::new("/r"));
+    assert!(
+        unrelated.is_empty(),
+        "unrelated scope must not inherit churn"
+    );
+}
+
+/// A file is not a scope. Before the directory guard this produced an index with
+/// zero rows and no error on any surface: the walk yielded one entry, stripping the
+/// root left an empty path, and reading `<file>/` failed ENOTDIR and was discarded.
+#[test]
+fn pointing_at_a_file_is_refused_rather_than_indexing_nothing() {
+    let fx = fixture();
+    seed(&fx);
+    let msg = match brainiac::config::discover(Some(&fx.root.join("src/lib.rs"))) {
+        Ok(r) => panic!("a file was accepted as a scope: {}", r.scope.display()),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(msg.contains("is not a directory"), "{msg}");
+    assert!(
+        msg.contains("src"),
+        "the message should suggest the directory: {msg}"
+    );
 }

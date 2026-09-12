@@ -11,10 +11,13 @@ const PROTOCOL: &str = "2025-06-18";
 pub fn serve(repo: &Repo, st: &mut Store) -> Result<()> {
     // Bring the index up to date before answering anything; stdout is reserved
     // for the protocol, so progress goes to stderr.
-    let s = index::run(&repo.root, st, false)?;
+    let s = index::run(&repo.scope, repo.git_root.as_deref(), st, false)?;
     eprintln!(
-        "brainiac: indexed {} files ({} reparsed) in {}ms",
-        s.scanned, s.reparsed, s.elapsed_ms
+        "brainiac: scope {} — indexed {} files ({} reparsed) in {}ms",
+        repo.scope.display(),
+        s.scanned,
+        s.reparsed,
+        s.elapsed_ms
     );
 
     let stdin = std::io::stdin();
@@ -136,7 +139,7 @@ fn call(repo: &Repo, st: &mut Store, name: &str, args: &Value) -> Result<String>
             .unwrap_or(d)
     };
     let head = st.get_meta("head")?;
-    let root = repo.root.to_string_lossy().to_string();
+    let root = repo.scope.to_string_lossy().to_string();
 
     match name {
         "context_pack" => pack::build(
@@ -189,7 +192,7 @@ fn call(repo: &Repo, st: &mut Store, name: &str, args: &Value) -> Result<String>
                 let Some(f) = crate::store::file_by_id(&st.conn, sym.file_id)? else {
                     continue;
                 };
-                let full = repo.root.join(&f.path);
+                let full = repo.scope.join(&f.path);
                 let src = std::fs::read_to_string(&full).unwrap_or_default();
                 let lines: Vec<&str> = src.lines().collect();
                 let a = sym.start_line.saturating_sub(1) as usize;
@@ -207,7 +210,7 @@ fn call(repo: &Repo, st: &mut Store, name: &str, args: &Value) -> Result<String>
             Ok(out)
         }
         "reindex" => {
-            let s = index::run(&repo.root, st, false)?;
+            let s = index::run(&repo.scope, repo.git_root.as_deref(), st, false)?;
             Ok(format!(
                 "scanned {} files, reparsed {}, pruned {} in {}ms",
                 s.scanned, s.reparsed, s.pruned, s.elapsed_ms

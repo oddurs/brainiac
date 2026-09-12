@@ -4,7 +4,7 @@
 
 ## v0.1 — Dogfood
 
-`##········` 14% · 1 of 7 done · due 2026-09-26
+`###·······` 29% · 2 of 7 done · due 2026-09-26
 
 Install brainiac, point it at a repo you own, and get a context pack worth pasting — from the CLI, the TUI, or an agent over MCP.
 
@@ -14,19 +14,19 @@ Install brainiac, point it at a repo you own, and get a context pack worth pasti
 - [ ] `0009` Build and test on macOS and Linux in CI <sup>chore · p1 · build</sup>
 - [ ] `0010` cargo install from a clean clone works with no extra steps <sup>chore · p0 · build</sup>
 - [ ] `0011` Verify the README quickstart verbatim, as a stranger <sup>docs · p0 · docs</sup>
-- [ ] `0013` Indexing must scope to the directory named, not the whole enclosing repo <sup>bug · p1 · index</sup>
 
 ### in progress
 
-- [ ] `0007` A concurrent commit kills an index run instantly <sup>bug · p0 · store</sup>
+- [ ] `0013` Indexing must scope to the directory named, not the whole enclosing repo <sup>bug · p1 · index</sup>
 
 ### done
 
 - [x] `0006` Publish the repository and get the first CI run green <sup>chore · p0 · build</sup>
+- [x] `0007` A concurrent commit kills an index run instantly <sup>bug · p0 · store</sup>
 
 ## v0.2 — Trust it
 
-`··········` 0% · 0 of 18 done · due 2026-10-24
+`··········` 0% · 0 of 19 done · due 2026-10-24
 
 See why brainiac ranked something where it did, steer it when it is wrong, and know that a ranking change made results better rather than merely different.
 
@@ -50,6 +50,7 @@ See why brainiac ranked something where it did, steer it when it is wrong, and k
 - [ ] `0028` Open the selected hit in $EDITOR from the browser <sup>feature · p2 · tui</sup>
 - [ ] `0029` Every error names the path and what to do about it <sup>chore · p1 · cli</sup>
 - [ ] `0030` Document .brainiac.toml <sup>docs · p1 · docs</sup>
+- [ ] `0065` Scoping into an ignored directory indexes ignored content <sup>bug · p2 · index</sup>
 
 ## v0.3 — Reach
 

@@ -42,12 +42,31 @@ cargo install --path .
 ```
 
 Requires a Rust toolchain. Indexes live in your XDG data directory, keyed by a hash of
-the repo root, so nothing lands in the repo.
+the indexed directory, so nothing lands in the repo.
+
+## What gets indexed
+
+`-C` names the directory to index. Without it, the scope is the enclosing git
+repository, so running from a subdirectory still sees everything:
+
+```sh
+cd src && brainiac search "…"     # the whole repository
+brainiac -C packages/ui search "…"  # only that package
+```
+
+The two therefore differ: `brainiac -C .` inside `src/` indexes `src/` alone, while a
+bare `brainiac` there indexes the repository. Each scope gets its own index file.
+
+The enclosing repository is still located either way — recency and the commit id come
+from it even when only a subtree is indexed.
+
+One sharp edge: `.gitignore` rules do not apply to the scope root itself, so
+`-C node_modules/foo` will index it. Rules *below* the scope are honoured normally.
 
 ## Use it from an agent
 
 ```sh
-claude mcp add brainiac -- brainiac -C /path/to/repo mcp
+claude mcp add brainiac -- brainiac -C /path/to/repo mcp   # -C is the scope
 ```
 
 Five tools: `context_pack`, `search_code`, `repo_map`, `read_symbol`, `reindex`. The

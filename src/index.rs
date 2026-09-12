@@ -29,7 +29,13 @@ struct Unit {
     chunks: Vec<parse::ChunkDraft>,
 }
 
-pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
+pub fn run(
+    scope: &Path,
+    git_root: Option<&Path>,
+    st: &mut store::Store,
+    force: bool,
+) -> Result<Stats> {
+    let root = scope;
     let t0 = Instant::now();
     let generation = st
         .get_meta("generation")?
@@ -113,7 +119,12 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
         })
         .collect();
 
-    let churn = git_churn(root);
+    // Churn comes from the repository even when only a subtree is indexed, so its
+    // repository-relative paths have to be rebased onto the scope.
+    let churn = match git_root {
+        Some(g) => rebase_churn(git_churn(g), scope, g),
+        None => HashMap::new(),
+    };
 
     let mut reparsed = 0usize;
     let pruned;
@@ -169,8 +180,8 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
     }
 
     st.set_meta("generation", &generation.to_string())?;
-    st.set_meta("root", &root.to_string_lossy())?;
-    if let Some(head) = git_head(root) {
+    st.set_meta("root", &scope.to_string_lossy())?;
+    if let Some(head) = git_root.and_then(git_head) {
         st.set_meta("head", &head)?;
     }
     st.conn.execute_batch("PRAGMA optimize;")?;
@@ -181,6 +192,32 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
         pruned,
         elapsed_ms: t0.elapsed().as_millis(),
     })
+}
+
+/// Move repository-relative churn paths onto a scope that may be a subtree.
+///
+/// A path outside the scope is dropped. A scope that is not inside the repository at
+/// all yields nothing: applying every repository path to an unrelated directory would
+/// attribute churn to files that do not exist there.
+pub fn rebase_churn(
+    churn: HashMap<String, u32>,
+    scope: &Path,
+    git_root: &Path,
+) -> HashMap<String, u32> {
+    let prefix = match scope.strip_prefix(git_root) {
+        Ok(rel) if rel.as_os_str().is_empty() => return churn,
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => return HashMap::new(),
+    };
+    churn
+        .into_iter()
+        .filter_map(|(path, n)| {
+            Path::new(&path)
+                .strip_prefix(&prefix)
+                .ok()
+                .map(|r| (r.to_string_lossy().to_string(), n))
+        })
+        .collect()
 }
 
 /// Commits touching each file in the recent window. A cheap, honest recency
