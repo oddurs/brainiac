@@ -8,6 +8,16 @@ use std::io::{BufRead, Write};
 
 const PROTOCOL: &str = "2025-06-18";
 
+/// Kept beside [`tools`] so an unknown name is recognised as such rather than
+/// answered with prose.
+const TOOL_NAMES: [&str; 5] = [
+    "context_pack",
+    "search_code",
+    "repo_map",
+    "read_symbol",
+    "reindex",
+];
+
 pub fn serve(repo: &Repo, st: &mut Store) -> Result<()> {
     // Bring the index up to date before answering anything; stdout is reserved
     // for the protocol, so progress goes to stderr.
@@ -64,10 +74,18 @@ fn dispatch(repo: &Repo, st: &mut Store, method: &str, params: &Value) -> Result
         "tools/call" => {
             let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let text = call(repo, st, name, &args)?;
-            Ok(Some(
-                json!({"content":[{"type":"text","text":text}],"isError":false}),
-            ))
+            // An unrecognised tool is an error the agent must see: reporting it as a
+            // successful result with explanatory prose invites the model to treat the
+            // explanation as the answer.
+            let (text, is_error) = match call(repo, st, name, &args) {
+                Ok(text) => (text, false),
+                Err(e) => (format!("{e:#}"), true),
+            };
+            let unknown = !TOOL_NAMES.contains(&name);
+            Ok(Some(json!({
+                "content": [{"type": "text", "text": text}],
+                "isError": is_error || unknown
+            })))
         }
         m if m.starts_with("notifications/") => Ok(None),
         _ => Ok(Some(json!({}))),
