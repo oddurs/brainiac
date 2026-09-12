@@ -2,10 +2,9 @@
 id: 11
 title: Verify the README quickstart verbatim, as a stranger
 type: docs
-status: doing
+status: done
 milestone: v0.1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-12
 depends_on:
 - 10
 created: 2026-09-11
