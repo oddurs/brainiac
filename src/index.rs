@@ -2,7 +2,7 @@
 //! detection, parallel parse, single-writer commit.
 
 use crate::{lang, parse, store};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rusqlite::OptionalExtension;
 use std::collections::HashMap;
@@ -118,38 +118,54 @@ pub fn run(root: &Path, st: &mut store::Store, force: bool) -> Result<Stats> {
     let mut reparsed = 0usize;
     let pruned;
     {
-        let tx = st.conn.transaction()?;
-        for u in &units {
-            let facts = store::FileFacts {
-                path: &u.path,
-                lang: u.lang.name(),
-                hash: &u.hash,
-                size: u.size,
-                lines: u.lines,
-                mtime: u.mtime,
-            };
-            let (id, changed) = store::upsert_file(&tx, &facts, generation, force)?;
-            let Some(parsed) = &u.parsed else { continue };
-            if !changed {
-                continue;
+        let db = st.path.clone();
+        // One context for the whole write, because the failure can surface from any
+        // statement inside it, not just from BEGIN.
+        let mut write = |conn: &mut rusqlite::Connection| -> Result<usize> {
+            let tx = store::begin_write(conn)?;
+            for u in &units {
+                let facts = store::FileFacts {
+                    path: &u.path,
+                    lang: u.lang.name(),
+                    hash: &u.hash,
+                    size: u.size,
+                    lines: u.lines,
+                    mtime: u.mtime,
+                };
+                let (id, changed) = store::upsert_file(&tx, &facts, generation, force)?;
+                let Some(parsed) = &u.parsed else { continue };
+                if !changed {
+                    continue;
+                }
+                reparsed += 1;
+                store::clear_payload(&tx, id)?;
+                for d in &parsed.defs {
+                    store::insert_symbol(
+                        &tx,
+                        id,
+                        &d.name,
+                        &d.kind,
+                        d.start_line,
+                        d.end_line,
+                        &d.sig,
+                    )?;
+                }
+                for (name, n) in &parsed.refs {
+                    store::insert_ref(&tx, id, name, *n)?;
+                }
+                for c in &u.chunks {
+                    store::insert_chunk(&tx, id, c)?;
+                }
             }
-            reparsed += 1;
-            store::clear_payload(&tx, id)?;
-            for d in &parsed.defs {
-                store::insert_symbol(&tx, id, &d.name, &d.kind, d.start_line, d.end_line, &d.sig)?;
+            for (path, n) in &churn {
+                store::set_churn(&tx, path, *n)?;
             }
-            for (name, n) in &parsed.refs {
-                store::insert_ref(&tx, id, name, *n)?;
-            }
-            for c in &u.chunks {
-                store::insert_chunk(&tx, id, c)?;
-            }
-        }
-        for (path, n) in &churn {
-            store::set_churn(&tx, path, *n)?;
-        }
-        pruned = store::prune(&tx, generation)?;
-        tx.commit()?;
+            let pruned = store::prune(&tx, generation)?;
+            tx.commit()?;
+            Ok(pruned)
+        };
+        pruned = write(&mut st.conn)
+            .with_context(|| format!("writing the index at {}", db.display()))?;
     }
 
     st.set_meta("generation", &generation.to_string())?;

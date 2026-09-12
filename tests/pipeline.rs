@@ -425,3 +425,47 @@ export class UserStore { fetch(id: string) { return loadUser(id); } }\n";
         assert!(p.refs.contains_key("send"), "{lang:?} refs: {:?}", p.refs);
     }
 }
+
+/// Two indexers on one index — the MCP server refreshing while a CLI run arrives.
+///
+/// A smoke test, not a regression test: it drives the real write path under real
+/// contention, but the interleaving that triggers SQLITE_BUSY_SNAPSHOT is not
+/// guaranteed, and this passes on a deferred transaction often enough to be useless
+/// as a guard. The guard is
+/// `store::tests::the_index_transaction_takes_the_write_lock_at_begin`, which is
+/// deterministic. This one is here to catch gross breakage: deadlock, corruption, or
+/// a run that silently indexes nothing.
+#[test]
+fn two_concurrent_index_runs_both_succeed() {
+    let fx = fixture();
+    seed(&fx);
+    for i in 0..60 {
+        fx.write(
+            &format!("src/mod{i}.rs"),
+            &format!(
+                "use crate::parser::parse_config;\npub fn handler_{i}(c: &str) -> u32 {{\n    parse_config(c).retries + {i}\n}}\n"
+            ),
+        );
+    }
+    fx.index(&mut fx.store());
+
+    for round in 0..2 {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let db = fx.db.clone();
+                let root = fx.root.clone();
+                std::thread::spawn(move || {
+                    let mut st = store::Store::open(&db).unwrap();
+                    index::run(&root, &mut st, true).map(|s| s.scanned)
+                })
+            })
+            .collect();
+        for h in handles {
+            let scanned = h
+                .join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("round {round}: concurrent index run failed: {e:#}"));
+            assert_eq!(scanned, 63);
+        }
+    }
+}

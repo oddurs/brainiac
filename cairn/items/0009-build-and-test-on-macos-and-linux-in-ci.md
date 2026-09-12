@@ -7,7 +7,7 @@ milestone: v0.1
 depends_on:
 - 6
 created: 2026-09-11
-updated: 2026-09-11
+updated: 2026-09-12
 priority: p1
 effort: m
 area: build
@@ -30,3 +30,7 @@ single `required` job so branch protection still names one status check.
 - [ ] `required` needs the whole matrix and fails if any leg fails.
 - [ ] Branch protection still names exactly one check.
 - [ ] The build cache is keyed per platform so the legs do not evict each other.
+
+## 2026-09-12
+
+CI's first run warns that actions/checkout and Swatinem/rust-cache target Node.js 20, which GitHub now forces onto Node 24. Bump both pins while adding the platform matrix — same file, same change.

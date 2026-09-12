@@ -2,10 +2,10 @@
 id: 6
 title: Publish the repository and get the first CI run green
 type: chore
-status: backlog
+status: done
 milestone: v0.1
 created: 2026-09-11
-updated: 2026-09-11
+updated: 2026-09-12
 priority: p0
 effort: s
 area: build
@@ -24,8 +24,8 @@ branch protection that makes every later change go through a PR.
 
 ## Acceptance criteria
 
-- [ ] `git log` shows one initial commit containing the full tree.
-- [ ] `github.com/oddurs/brainiac` exists, public, with the MIT licence detected.
-- [ ] The `ci` workflow has run once and is green.
-- [ ] Branch protection on `main` requires a PR and the `required` status check.
-- [ ] A direct push to `main` is refused by `.githooks/pre-push`.
+- [x] `git log` shows one initial commit containing the full tree.
+- [x] `github.com/oddurs/brainiac` exists, public, with the MIT licence detected.
+- [x] The `ci` workflow has run once and is green.
+- [x] Branch protection on `main` requires a PR and the `required` status check.
+- [x] A direct push to `main` is refused by `.githooks/pre-push`.
