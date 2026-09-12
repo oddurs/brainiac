@@ -271,14 +271,8 @@ fn git_churn(root: &Path) -> HashMap<String, u32> {
 }
 
 fn git_head(root: &Path) -> Option<String> {
-    let o = std::process::Command::new("git")
-        .args([
-            "-C",
-            &root.to_string_lossy(),
-            "rev-parse",
-            "--short",
-            "HEAD",
-        ])
+    let o = git_at(root)
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()?;
     o.status

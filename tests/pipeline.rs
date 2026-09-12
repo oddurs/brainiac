@@ -713,6 +713,10 @@ fn pointing_at_a_file_is_refused_rather_than_indexing_nothing() {
 /// This is the regression test for four fixture commits landing on a real feature
 /// branch: `scripts/task check` ran from `.githooks/pre-push`, which exports
 /// `GIT_DIR`, and `GIT_DIR` beats `-C`.
+///
+/// It drives the real binary in a child process rather than setting `GIT_DIR` in
+/// this one: process environment is global, and mutating it would leak into every
+/// other test running in parallel.
 #[test]
 fn an_inherited_git_dir_does_not_leak_into_indexing() {
     let victim = fixture();
@@ -720,44 +724,73 @@ fn an_inherited_git_dir_does_not_leak_into_indexing() {
     victim.write("only.rs", "pub fn victim_fn() {}\n");
     git(&victim, &["add", "-A"]);
     git(&victim, &["commit", "-qm", "victim"]);
-    let victim_head_before = std::process::Command::new("git")
-        .args(["-C", &victim.root.to_string_lossy(), "rev-parse", "HEAD"])
-        .output()
-        .unwrap()
-        .stdout;
+    let victim_head = rev_parse(&victim);
 
-    let fx = fixture();
-    git(&fx, &["init", "-q"]);
-    fx.write("a.rs", "pub fn subject_fn() {}\n");
-    git(&fx, &["add", "-A"]);
-    git(&fx, &["commit", "-qm", "subject"]);
+    let subject = fixture();
+    git(&subject, &["init", "-q"]);
+    subject.write("a.rs", "pub fn subject_fn() {}\n");
+    git(&subject, &["add", "-A"]);
+    git(&subject, &["commit", "-qm", "subject"]);
+    let subject_head = rev_parse(&subject);
+    assert_ne!(victim_head, subject_head);
 
-    // Point GIT_DIR at the victim, as a hook would.
-    // SAFETY: single-threaded within this test; restored before returning.
-    let victim_git = victim.root.join(".git");
-    unsafe { std::env::set_var("GIT_DIR", &victim_git) };
+    // A private HOME keeps the child's index out of the real data directory.
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| -> String {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_brainiac"))
+            .args(["-C", &subject.root.to_string_lossy()])
+            .args(args)
+            .env("GIT_DIR", victim.root.join(".git"))
+            .env("HOME", home.path())
+            .env("XDG_DATA_HOME", home.path())
+            .output()
+            .expect("run brainiac");
+        assert!(
+            out.status.success(),
+            "brainiac {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
 
-    let repo = brainiac::config::discover(Some(&fx.root)).unwrap();
-    let mut st = store::Store::open(&fx.db).unwrap();
-    let stats = index::run(&repo.scope, repo.git_root.as_deref(), &mut st, false).unwrap();
+    run(&["index"]);
+    let status = run(&["status"]);
 
-    unsafe { std::env::remove_var("GIT_DIR") };
-
-    assert_eq!(stats.scanned, 1);
-    // Churn and HEAD must describe the subject repo, not the victim.
-    assert_eq!(
-        churn_of(&st.conn, "a.rs"),
-        1,
-        "churn came from the wrong repository"
+    assert!(
+        status.contains("files    1"),
+        "the subject repo was not indexed:\n{status}"
     );
-
-    let victim_head_after = std::process::Command::new("git")
-        .args(["-C", &victim.root.to_string_lossy(), "rev-parse", "HEAD"])
-        .output()
-        .unwrap()
-        .stdout;
-    assert_eq!(
-        victim_head_before, victim_head_after,
-        "indexing moved the unrelated repository's HEAD"
+    // The commit reported must be the subject's, not the repository GIT_DIR names.
+    assert!(
+        status.contains(&subject_head[..7]),
+        "status reported the wrong repository's commit:\n{status}"
     );
+    assert!(
+        !status.contains(&victim_head[..7]),
+        "status leaked the GIT_DIR repository's commit:\n{status}"
+    );
+    // And indexing must not have written into the unrelated repository.
+    assert_eq!(
+        victim_head,
+        rev_parse(&victim),
+        "indexing moved the other repository's HEAD"
+    );
+}
+
+fn rev_parse(fx: &Fixture) -> String {
+    let mut cmd = std::process::Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .args(["-C", &fx.root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
