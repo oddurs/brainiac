@@ -566,8 +566,25 @@ fn two_concurrent_index_runs_both_succeed() {
 /// `git init` plus commits. The churn rebasing is the one genuinely new algorithm
 /// in scoped indexing, and a fake `.git` directory cannot exercise it: `git log`
 /// fails and the churn map comes back empty.
+///
+/// The environment scrubbing is not optional. Git hooks export `GIT_DIR`, and it
+/// takes precedence over `-C` — so when the suite runs from `.githooks/pre-push`,
+/// an unscrubbed `git commit` here lands in the real repository being pushed. That
+/// happened, and it put four fixture commits on a feature branch.
 fn git(fx: &Fixture, args: &[&str]) {
-    let out = std::process::Command::new("git")
+    let mut cmd = std::process::Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
         .args(["-C", &fx.root.to_string_lossy()])
         .args(args)
         .env("GIT_AUTHOR_NAME", "t")
@@ -687,5 +704,60 @@ fn pointing_at_a_file_is_refused_rather_than_indexing_nothing() {
     assert!(
         msg.contains("src"),
         "the message should suggest the directory: {msg}"
+    );
+}
+
+/// Running with `GIT_DIR` set, exactly as a git hook does, must not read history
+/// from — or write it to — the repository that set the variable.
+///
+/// This is the regression test for four fixture commits landing on a real feature
+/// branch: `scripts/task check` ran from `.githooks/pre-push`, which exports
+/// `GIT_DIR`, and `GIT_DIR` beats `-C`.
+#[test]
+fn an_inherited_git_dir_does_not_leak_into_indexing() {
+    let victim = fixture();
+    git(&victim, &["init", "-q"]);
+    victim.write("only.rs", "pub fn victim_fn() {}\n");
+    git(&victim, &["add", "-A"]);
+    git(&victim, &["commit", "-qm", "victim"]);
+    let victim_head_before = std::process::Command::new("git")
+        .args(["-C", &victim.root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+
+    let fx = fixture();
+    git(&fx, &["init", "-q"]);
+    fx.write("a.rs", "pub fn subject_fn() {}\n");
+    git(&fx, &["add", "-A"]);
+    git(&fx, &["commit", "-qm", "subject"]);
+
+    // Point GIT_DIR at the victim, as a hook would.
+    // SAFETY: single-threaded within this test; restored before returning.
+    let victim_git = victim.root.join(".git");
+    unsafe { std::env::set_var("GIT_DIR", &victim_git) };
+
+    let repo = brainiac::config::discover(Some(&fx.root)).unwrap();
+    let mut st = store::Store::open(&fx.db).unwrap();
+    let stats = index::run(&repo.scope, repo.git_root.as_deref(), &mut st, false).unwrap();
+
+    unsafe { std::env::remove_var("GIT_DIR") };
+
+    assert_eq!(stats.scanned, 1);
+    // Churn and HEAD must describe the subject repo, not the victim.
+    assert_eq!(
+        churn_of(&st.conn, "a.rs"),
+        1,
+        "churn came from the wrong repository"
+    );
+
+    let victim_head_after = std::process::Command::new("git")
+        .args(["-C", &victim.root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(
+        victim_head_before, victim_head_after,
+        "indexing moved the unrelated repository's HEAD"
     );
 }

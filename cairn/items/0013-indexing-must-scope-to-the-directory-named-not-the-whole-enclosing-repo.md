@@ -40,3 +40,7 @@ it, but the walk and the index are confined to the directory given.
 ## 2026-09-12
 
 Review found a regression I introduced: -C pointing at a FILE produced a silent empty index (walk yields one entry, strip_prefix leaves an empty path, read of '<file>/' fails ENOTDIR and is discarded). Now refused with a message naming the parent directory. Also found my rebase_churn extraction had silently not applied — index::run still ran the old inline copy, so the F3 fallback fix was dead and the e2e churn test was passing without exercising it. Both fixed and both now verified by mutation.
+
+## 2026-09-12
+
+Second review round found a worse bug than the one being fixed: git hooks export GIT_DIR, and GIT_DIR takes precedence over 'git -C'. The test helper's 'git init'/'commit' therefore wrote into the real repository when the suite ran from .githooks/pre-push — four fixture commits landed on this feature branch. Same exposure existed in production: git_churn and git_head would read history from whatever repo invoked the hook. Both now scrub the inherited git environment, with a regression test that fails when the scrub is removed.

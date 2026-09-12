@@ -222,12 +222,32 @@ pub fn rebase_churn(
 
 /// Commits touching each file in the recent window. A cheap, honest recency
 /// prior: what you have been editing is what you are about to ask about.
+/// A `git` invocation pinned to `root`.
+///
+/// Git hooks export `GIT_DIR`, and it takes precedence over `-C`. Without scrubbing
+/// the inherited environment, running brainiac from inside a hook would read history
+/// from whatever repository invoked the hook rather than the one being indexed.
+fn git_at(root: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        c.env_remove(var);
+    }
+    c.arg("-C").arg(root);
+    c
+}
+
 fn git_churn(root: &Path) -> HashMap<String, u32> {
     let mut out = HashMap::new();
-    let Ok(o) = std::process::Command::new("git")
+    let Ok(o) = git_at(root)
         .args([
-            "-C",
-            &root.to_string_lossy(),
             "log",
             "--since=120.days",
             "--name-only",
