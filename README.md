@@ -38,11 +38,15 @@ No embeddings, no model download, no network. The whole thing works on a plane.
 ## Install
 
 ```sh
-cargo install --path .
+cargo install --path . --locked
 ```
 
-Requires a Rust toolchain. Indexes live in your XDG data directory, keyed by a hash of
-the indexed directory, so nothing lands in the repo.
+Requires a Rust toolchain. `--locked` builds against the committed `Cargo.lock`.
+From a cold clone that takes about 25 seconds and produces a 9.5 MiB binary — most of
+which is the six compiled-in tree-sitter grammars.
+
+Indexes live in your XDG data directory, keyed by a hash of the indexed directory, so
+nothing lands in the repo.
 
 ## What gets indexed
 
