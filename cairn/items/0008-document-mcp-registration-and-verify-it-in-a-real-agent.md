@@ -2,10 +2,9 @@
 id: 8
 title: Document MCP registration and verify it in a real agent
 type: docs
-status: doing
+status: done
 milestone: v0.1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-12
 created: 2026-09-11
 updated: 2026-09-12
 priority: p0
