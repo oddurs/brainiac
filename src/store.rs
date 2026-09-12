@@ -2,11 +2,23 @@
 //! held once in `chunks` and mirrored into an external-content FTS index.
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use std::path::Path;
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// How long a writer waits for someone else's lock before giving up.
+///
+/// rusqlite already defaults to 5s, so this is not fixing a failure — it is stating a
+/// guarantee the tool depends on rather than inheriting one. The MCP server holds the
+/// index open for a whole agent session while CLI runs arrive in other terminals, and
+/// that has to wait rather than fail. Ten seconds is far longer than any index pass
+/// holds the write lock, so reaching it means something is genuinely stuck.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Store {
     pub conn: Connection,
+    /// Where this index lives, so failures can name it.
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +150,7 @@ impl Store {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("opening index at {}", path.display()))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -158,7 +171,10 @@ impl Store {
             )?;
         }
         conn.execute_batch(SCHEMA)?;
-        let st = Store { conn };
+        let st = Store {
+            conn,
+            path: path.to_path_buf(),
+        };
         st.set_meta("schema", SCHEMA_VERSION)?;
         Ok(st)
     }
@@ -187,6 +203,19 @@ pub struct FileFacts<'a> {
     pub size: u64,
     pub lines: u32,
     pub mtime: i64,
+}
+
+/// Begin the index's write transaction.
+///
+/// IMMEDIATE rather than the default DEFERRED, and the difference is the whole point.
+/// [`upsert_file`] reads before it writes, so a deferred transaction takes a read
+/// snapshot first; if anyone commits before the first write, SQLite answers the upgrade
+/// with `SQLITE_BUSY_SNAPSHOT`, which the busy handler is never consulted for. The run
+/// then dies instantly no matter how long [`BUSY_TIMEOUT`] is. Taking the write lock at
+/// BEGIN moves the contention to where the busy handler does apply, so a second indexer
+/// waits its turn instead.
+pub fn begin_write(conn: &mut Connection) -> Result<Transaction<'_>> {
+    Ok(conn.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
 /// Returns (file_id, needs_reparse).
@@ -408,4 +437,50 @@ pub fn counts(conn: &Connection) -> Result<(i64, i64, i64, i64)> {
         one("SELECT count(*) FROM chunks")?,
         one("SELECT coalesce(sum(lines),0) FROM files")?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let st = Store::open(&db).unwrap();
+        (dir, st)
+    }
+
+    #[test]
+    fn a_busy_timeout_is_configured() {
+        let (_d, st) = temp_store();
+        let ms: i64 = st
+            .conn
+            .query_row("SELECT * FROM pragma_busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ms, BUSY_TIMEOUT.as_millis() as i64);
+    }
+
+    /// The index transaction must hold the write lock from BEGIN. If it does not,
+    /// `upsert_file`'s leading SELECT takes a read snapshot and the first write is
+    /// answered with SQLITE_BUSY_SNAPSHOT, which no busy timeout can rescue.
+    #[test]
+    fn the_index_transaction_takes_the_write_lock_at_begin() {
+        let (_d, mut st) = temp_store();
+        assert_eq!(
+            st.conn.transaction_state(None::<&str>).unwrap(),
+            rusqlite::TransactionState::None
+        );
+        let tx = begin_write(&mut st.conn).unwrap();
+        assert_eq!(
+            tx.transaction_state(None::<&str>).unwrap(),
+            rusqlite::TransactionState::Write,
+            "index writes must not begin deferred"
+        );
+    }
+
+    #[test]
+    fn a_store_remembers_where_it_lives() {
+        let (d, st) = temp_store();
+        assert_eq!(st.path, d.path().join("index.db"));
+    }
 }
