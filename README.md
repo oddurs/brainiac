@@ -66,11 +66,37 @@ One sharp edge: `.gitignore` rules do not apply to the scope root itself, so
 ## Use it from an agent
 
 ```sh
-claude mcp add brainiac -- brainiac -C /path/to/repo mcp   # -C is the scope
+claude mcp add brainiac -- brainiac -C /path/to/repo mcp
 ```
 
-Five tools: `context_pack`, `search_code`, `repo_map`, `read_symbol`, `reindex`. The
-server brings the index up to date on start and on demand.
+**`-C` is the scope, and it is not optional in practice.** The server indexes the
+directory you name — point it at a package inside a monorepo and it will only ever see
+that package. Without `-C` the scope is whatever directory the agent happened to launch
+the server from, which is rarely what you want. Use an absolute path.
+
+Five tools:
+
+| | |
+|---|---|
+| `context_pack` | a token-budgeted map plus the code most likely to answer a question |
+| `search_code` | ranked hybrid search, returning spans with their source |
+| `repo_map` | the skeleton, for orienting in unfamiliar code |
+| `read_symbol` | every definition with an exact name |
+| `reindex` | re-scan, if files changed during the session |
+
+The index is brought up to date when the server starts and on demand, so a long agent
+session does not go stale.
+
+Progress and diagnostics go to **stderr**; stdout carries nothing but JSON-RPC. The
+startup line names the scope, which is the one place a misdirected registration becomes
+visible:
+
+```
+brainiac: scope /path/to/repo — indexed 82 files (82 reparsed) in 45ms
+```
+
+A registration pointing at a directory that does not exist exits non-zero naming the
+path, rather than starting and answering every question with nothing.
 
 ## Languages
 

@@ -2,10 +2,9 @@
 id: 13
 title: Indexing must scope to the directory named, not the whole enclosing repo
 type: bug
-status: doing
+status: done
 milestone: v0.1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-12
 created: 2026-09-11
 updated: 2026-09-12
 priority: p1
