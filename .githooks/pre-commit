@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+scripts/task fmt:check
+scripts/task lint

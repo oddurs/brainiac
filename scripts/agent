@@ -1,0 +1,107 @@
+#!/bin/sh
+# One unit of work, one worktree, one branch, one pull request.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+repo=$(basename "$root")
+trees="$root/../.worktrees/$repo"
+
+default_branch() {
+  if git remote get-url origin >/dev/null 2>&1; then
+    git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' && return
+  fi
+  for b in main master; do
+    git show-ref --quiet --verify "refs/heads/$b" && { echo "$b"; return; }
+  done
+  # Works on an unborn branch, where rev-parse HEAD does not.
+  git branch --show-current
+}
+
+current_branch() { git branch --show-current; }
+
+say() { echo "→ $*"; }
+die() { echo "✗ $*" >&2; exit 1; }
+
+base=$(default_branch)
+
+cmd_doctor() {
+  echo "repo     $repo"
+  echo "root     $root"
+  echo "default  $base"
+  echo "branch   $(current_branch)"
+  echo "worktrees $trees"
+  hp=$(git config --get core.hooksPath || echo "<unset>")
+  [ "$hp" = ".githooks" ] || die "core.hooksPath is $hp — run scripts/setup"
+  echo "hooks    $hp"
+  for h in commit-msg pre-commit pre-push; do
+    [ -x ".githooks/$h" ] || die ".githooks/$h is not executable"
+  done
+  [ -x scripts/task ] || die "scripts/task is not executable"
+  echo "✓ doctor clean"
+}
+
+cmd_start() {
+  branch="${1:?usage: scripts/agent start <type>/<slug>}"
+  case "$branch" in
+    feat/*|fix/*|chore/*|docs/*|perf/*|refactor/*|test/*) ;;
+    *) die "branch must be <type>/<slug>, type ∈ feat fix chore docs perf refactor test" ;;
+  esac
+  dir="$trees/$(echo "$branch" | tr '/' '-')"
+  [ -d "$dir" ] && { echo "$dir"; return; }
+  mkdir -p "$trees"
+  say "worktree $dir off $base"
+  if git show-ref --quiet --verify "refs/heads/$branch"; then
+    git worktree add "$dir" "$branch"
+  else
+    git worktree add -b "$branch" "$dir" "$base"
+  fi
+  echo "$dir"
+}
+
+cmd_check()  { scripts/task check; }
+
+cmd_commit() {
+  [ $# -gt 0 ] || die "usage: scripts/agent commit <conventional message>"
+  git add -A
+  git diff --cached --quiet && die "nothing staged"
+  git commit -m "$*"
+}
+
+cmd_pr() {
+  branch=$(current_branch)
+  [ "$branch" = "$base" ] && die "refusing to open a PR from $base"
+  scripts/task check
+  git push -u origin "$branch"
+  command -v gh >/dev/null 2>&1 || die "gh not installed — open the PR by hand"
+  gh pr create --base "$base" --fill
+}
+
+cmd_sync() {
+  git fetch origin
+  git rebase "origin/$base"
+}
+
+cmd_done() {
+  branch=$(current_branch)
+  [ "$branch" = "$base" ] && die "already on $base"
+  dir=$(git rev-parse --show-toplevel)
+  say "removing worktree $dir"
+  cd "$root"
+  git worktree remove "$dir" --force
+  git branch -D "$branch" 2>/dev/null || true
+  git worktree prune
+}
+
+cmd_list() { git worktree list; }
+
+case "${1:-}" in
+  doctor) shift; cmd_doctor "$@" ;;
+  start)  shift; cmd_start  "$@" ;;
+  check)  shift; cmd_check  "$@" ;;
+  commit) shift; cmd_commit "$@" ;;
+  pr)     shift; cmd_pr     "$@" ;;
+  sync)   shift; cmd_sync   "$@" ;;
+  done)   shift; cmd_done   "$@" ;;
+  list)   shift; cmd_list   "$@" ;;
+  *) echo "usage: scripts/agent {doctor|start|check|commit|pr|sync|done|list}" >&2; exit 2 ;;
+esac

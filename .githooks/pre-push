@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+remote_head=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+base=${remote_head:-main}
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    "refs/heads/$base")
+      # Allow only the very first push, which creates the branch.
+      if git ls-remote --exit-code --heads origin "$base" >/dev/null 2>&1; then
+        echo "✗ direct push to $base — it advances only through a merged pull request" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+scripts/task check

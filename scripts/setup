@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run once after cloning.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+git config core.hooksPath .githooks
+echo "✓ hooks path → .githooks"
+
+missing=0
+for t in cargo rustc; do
+  command -v "$t" >/dev/null 2>&1 || { echo "✗ missing: $t" >&2; missing=1; }
+done
+cargo fmt --version >/dev/null 2>&1 || { echo "✗ missing: rustfmt (rustup component add rustfmt)" >&2; missing=1; }
+cargo clippy --version >/dev/null 2>&1 || { echo "✗ missing: clippy (rustup component add clippy)" >&2; missing=1; }
+[ "$missing" -eq 0 ] && echo "✓ toolchain present"
+exit "$missing"
